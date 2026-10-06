@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stok AI</title>
+<style>
+:root{--bg:#f4f5f2;--card:#fff;--tx:#1d2420;--mut:#667068;--ac:#1f6f54;--bd:#dde1db;--warn:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#121714;--card:#1a211d;--tx:#e6ebe7;--mut:#98a39b;--ac:#4fb68c;--bd:#2a332d;--warn:#f59e0b}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid var(--bd);background:var(--card)}
+.hd{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+h1{margin:0;font-size:18px}
+main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px 24px;max-width:1200px;margin:auto}
+@media(max-width:860px){main{grid-template-columns:1fr;padding:12px}header{padding:12px}}
+section{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:16px;min-width:0}
+#pilih{max-width:520px;margin:24px auto}
+h2{margin:0 0 12px;font-size:15px}
+input,button,select{font:inherit;font-size:16px;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx)}
+input[type=checkbox]{padding:0;vertical-align:middle}
+button{background:var(--ac);color:#fff;border:0;cursor:pointer}
+button.sec,label.sec{background:transparent;color:var(--ac);border:1px solid var(--bd);cursor:pointer;padding:8px 10px;border-radius:6px}
+button:disabled{opacity:.4;cursor:default}
+:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.tbl{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--bd);white-space:nowrap}
+th{color:var(--mut);font-weight:500}
+.kosong{color:var(--mut)}
+.warn{color:var(--warn);font-size:13px}
+#namebar{margin-bottom:12px}#namebar label{margin-right:10px;white-space:nowrap}
+#log{height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.m{padding:8px 10px;border-radius:8px;max-width:92%;white-space:pre-wrap}
+.u{align-self:flex-end;background:var(--ac);color:#fff}
+.b{align-self:flex-start;background:var(--bg);border:1px solid var(--bd)}
+#cf{display:flex;gap:8px}#cf input{flex:1;min-width:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Stok AI</h1>
+  <div class="hd">
+    <span id="dirty" class="warn" hidden>Ada perubahan yang belum diunduh</span>
+    <span id="mode" class="kosong"></span>
+    <button id="ganti" class="sec" hidden>Ganti mode</button>
+    <input id="kode" type="password" placeholder="Kode akses" autocomplete="off" aria-label="Kode akses">
+  </div>
+</header>
+<section id="pilih">
+  <h2>Pilih mode</h2>
+  <p class="kosong">Mode menentukan aturan AI dan perlindungan data. Pilih sebelum mulai.</p>
+  <div class="bar"><button data-m="barang">Barang (inventaris alat)</button><button data-m="penilaian">Penilaian</button></div>
+</section>
+<main id="app" hidden>
+  <section>
+    <h2>Tabel</h2>
+    <div class="bar">
+      <label class="sec">Unggah CSV/Excel<input id="file" type="file" accept=".csv,.xlsx,.xls" hidden></label>
+      <select id="sheet" hidden aria-label="Pilih sheet"></select>
+      <button id="undo" class="sec" disabled>Undo</button>
+      <button id="redo" class="sec" disabled>Redo</button>
+      <button id="dlcsv" class="sec">Unduh CSV</button>
+      <button id="dlxlsx" class="sec">Unduh Excel</button>
+    </div>
+    <div id="namebar" class="warn" hidden></div>
+    <div class="tbl"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
+    <p id="kosong" class="kosong">Belum ada tabel. Unggah CSV/Excel (maks 2 MB, 500 baris, 20 kolom) atau minta AI membuatnya.</p>
+  </section>
+  <section>
+    <h2>Asisten AI</h2>
+    <div id="log"></div>
+    <form id="cf"><input id="msg" maxlength="500" placeholder="Perintah atau pertanyaan" autocomplete="off"><button>Kirim</button></form>
+  </section>
+</main>
+<script src="vendor/xlsx.full.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const clone = o => JSON.parse(JSON.stringify(o));
+const num = v => parseFloat(String(v).replace(',', '.'));
+const MAXR = 500, MAXC = 20, MAXB = 2 * 1024 * 1024;
+let mode = null, state = { columns: [], rows: [] }, seq = 0, undoS = [], redoS = [], dirty = false, chat = [], nameCols = new Set(), wb = null;
+const setDirty = v => { dirty = v; $('dirty').hidden = !v; };
+const guess = () => { nameCols = new Set(state.columns.filter(c => /nama|siswa|murid/i.test(c))); };
+
+// ---------- mode ----------
+document.querySelectorAll('#pilih button').forEach(b => b.onclick = () => start(b.dataset.m));
+function start(m) {
+  mode = m; state = { columns: [], rows: [] }; undoS = []; redoS = []; chat = []; nameCols = new Set(); wb = null;
+  $('log').innerHTML = ''; $('sheet').hidden = true; setDirty(false);
+  $('pilih').hidden = true; $('app').hidden = false; $('ganti').hidden = false;
+  $('mode').textContent = m === 'barang' ? 'Mode Barang' : 'Mode Penilaian';
+  say(m === 'barang'
+    ? 'Mode Barang. Unggah CSV/Excel atau minta saya membuat tabel, misalnya: "buat tabel stok bola dengan kolom nama, kategori, jumlah, kondisi".'
+    : 'Mode Penilaian. Unggah file nilai lalu tandai kolom nama siswa (nama disamarkan sebelum dikirim ke AI), atau minta saya membuat tabel, misalnya: "buat tabel penilaian lari untuk 10 siswa". Jangan mengetik nama siswa yang belum ada di tabel.', 'b');
+  render();
+}
+$('ganti').onclick = () => {
+  if ((state.rows.length || dirty) && !confirm('Ganti mode akan mengosongkan tabel dan chat. Unduh dulu jika perlu. Lanjutkan?')) return;
+  mode = null; $('app').hidden = true; $('pilih').hidden = false; $('ganti').hidden = true; $('mode').textContent = ''; setDirty(false);
+};
+
+// ---------- state, undo/redo ----------
+function commit(fn) {
+  undoS.push(clone(state)); if (undoS.length > 50) undoS.shift();
+  redoS = []; fn(); setDirty(true); render();
+}
+$('undo').onclick = () => { if (!undoS.length) return; redoS.push(clone(state)); state = undoS.pop(); setDirty(true); render(); };
+$('redo').onclick = () => { if (!redoS.length) return; undoS.push(clone(state)); state = redoS.pop(); setDirty(true); render(); };
+
+function render() {
+  const { columns: cols, rows } = state;
+  $('head').innerHTML = ''; $('body').innerHTML = '';
+  $('kosong').hidden = cols.length > 0;
+  if (cols.length) {
+    const tr = $('head').insertRow(); cols.forEach(c => { const th = document.createElement('th'); th.textContent = c; tr.append(th); });
+    rows.forEach(r => { const row = $('body').insertRow(); cols.forEach(c => row.insertCell().textContent = r[c] ?? ''); });
+  }
+  $('undo').disabled = !undoS.length; $('redo').disabled = !redoS.length;
+  const nb = $('namebar'); nb.hidden = !(mode === 'penilaian' && cols.length);
+  if (!nb.hidden) {
+    nameCols = new Set([...nameCols].filter(c => cols.includes(c)));
+    nb.textContent = 'Kolom nama siswa (disamarkan sebelum ke AI): ';
+    cols.forEach(c => {
+      const l = document.createElement('label'), i = document.createElement('input');
+      i.type = 'checkbox'; i.checked = nameCols.has(c); i.onchange = () => { i.checked ? nameCols.add(c) : nameCols.delete(c); };
+      l.append(i, ' ' + c); nb.append(l);
+    });
+  }
+}
+
+// ---------- unggah / unduh ----------
+$('file').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  if (f.size > MAXB) return alert('File terlalu besar (maks 2 MB).');
+  try {
+    wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+    const s = $('sheet'), names = wb.SheetNames; s.innerHTML = '';
+    if (names.length > 1) {
+      s.add(new Option('Pilih sheet…', '')); names.forEach(n => s.add(new Option(n, n))); s.value = ''; s.hidden = false;
+    } else { s.hidden = true; loadSheet(names[0]); }
+  } catch (err) { alert('Gagal membaca file: ' + err.message); }
+};
+$('sheet').onchange = e => loadSheet(e.target.value);
+function loadSheet(name) {
+  if (!name) return;
+  try {
+    const data = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
+    if (!data.length) throw new Error('Sheet kosong atau tidak ada baris data.');
+    const cols = Object.keys(data[0]);
+    if (data.length > MAXR || cols.length > MAXC) throw new Error('Terlalu besar (maks ' + MAXR + ' baris, ' + MAXC + ' kolom).');
+    commit(() => { state = { columns: cols, rows: data.map(r => ({ _id: ++seq, ...r })) }; if (mode === 'penilaian') guess(); });
+    setDirty(false);
+  } catch (err) { alert('Gagal membaca sheet: ' + err.message); }
+}
+function unduh(ext) {
+  if (!state.columns.length) return alert('Belum ada tabel untuk diunduh.');
+  // Netralkan sel berawalan = + - @ agar tidak dibaca sebagai rumus oleh Excel
+  const aman = v => (typeof v === 'string' && /^[=+\-@]/.test(v) && isNaN(Number(v))) ? "'" + v : v;
+  const aoa = [state.columns.map(aman), ...state.rows.map(r => state.columns.map(c => aman(r[c] ?? '')))];
+  const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet(aoa), 'Data');
+  XLSX.writeFile(w, (mode === 'penilaian' ? 'penilaian.' : 'stok.') + ext); setDirty(false);
+}
+$('dlcsv').onclick = () => unduh('csv');
+$('dlxlsx').onclick = () => unduh('xlsx');
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+// ---------- perintah dari AI ----------
+function match(r, where) {
+  const ks = Object.keys(where || {}); if (!ks.length) return false;
+  return ks.every(k => (Array.isArray(where[k]) ? where[k] : [where[k]])
+    .some(x => String(r[k] ?? '').trim().toLowerCase() === String(x).trim().toLowerCase()));
+}
+function apply(ops) {
+  for (const o of ops) {
+    const S = state, R = S.rows;
+    if (o.op === 'create_table' && Array.isArray(o.columns) && o.columns.length) {
+      state = { columns: o.columns.slice(0, MAXC).map(String), rows: [] };
+    } else if (o.op === 'add_column' && o.name && !S.columns.includes(o.name) && S.columns.length < MAXC) {
+      S.columns.push(String(o.name)); R.forEach(r => r[o.name] = o.default ?? '');
+    } else if (o.op === 'delete_column') {
+      S.columns = S.columns.filter(c => c !== o.name); R.forEach(r => delete r[o.name]);
+    } else if (o.op === 'add_rows' && Array.isArray(o.rows)) {
+      if (!S.columns.length && o.rows[0]) S.columns = Object.keys(o.rows[0]).slice(0, MAXC);
+      o.rows.slice(0, 40).forEach(r => { if (R.length >= MAXR) return; const n = { _id: ++seq }; S.columns.forEach(c => n[c] = r[c] ?? ''); R.push(n); });
+    } else if (o.op === 'update_rows' && o.set) {
+      R.filter(r => match(r, o.where)).forEach(r => S.columns.forEach(c => { if (c in o.set) r[c] = o.set[c]; }));
+    } else if (o.op === 'delete_rows') {
+      S.rows = R.filter(r => !match(r, o.where));
+    } else if (o.op === 'average' && Array.isArray(o.from) && o.to) {
+      const f = o.from.filter(c => S.columns.includes(c));
+      if (f.length && (S.columns.includes(o.to) || S.columns.length < MAXC)) {
+        if (!S.columns.includes(o.to)) S.columns.push(String(o.to));
+        R.forEach(r => { const v = f.map(c => num(r[c])).filter(x => !isNaN(x)); r[o.to] = v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length * 100) / 100 : ''; });
+      }
+    } else if (o.op === 'rank' && S.columns.includes(o.by) && o.to) {
+      if (!S.columns.includes(o.to) && S.columns.length < MAXC) S.columns.push(String(o.to));
+      const v = R.map(r => num(r[o.by]));
+      R.forEach((r, i) => { r[o.to] = isNaN(v[i]) ? '' : 1 + v.filter(x => x > v[i]).length; });
+    }
+  }
+}
+function parse(t) {
+  const m = t.trim().replace(/^```(?:json)?|```$/g, '').trim();
+  if (!m.startsWith('{')) return null;
+  try { const j = JSON.parse(m); return Array.isArray(j.ops) ? j : null; } catch { return null; }
+}
+// Ringkasan dihitung di sini; AI hanya menjelaskan.
+function ringkasan() {
+  const out = { jumlah_baris: state.rows.length, kolom: {} };
+  state.columns.forEach(c => {
+    const vals = state.rows.map(r => r[c]).filter(v => v !== '' && v != null), nums = vals.map(Number);
+    if (vals.length && nums.every(n => !isNaN(n)))
+      out.kolom[c] = { total: nums.reduce((a, b) => a + b, 0), min: Math.min(...nums), max: Math.max(...nums) };
+    else { const cnt = {}; vals.forEach(v => cnt[v] = (cnt[v] || 0) + 1); if (Object.keys(cnt).length <= 15) out.kolom[c] = { hitungan: cnt }; }
+  });
+  return out;
+}
+// Ringkas dampak perintah untuk konfirmasi
+function dampak(ops) {
+  const id = state.columns[0], out = []; let n = 0, bahaya = false;
+  ops.forEach(o => {
+    if (o.op === 'delete_rows') { bahaya = true; const m = state.rows.filter(r => match(r, o.where)); n += m.length; m.slice(0, 8).forEach(r => out.push(r[id] || '(kosong)')); }
+    else if (o.op === 'update_rows') n += state.rows.filter(r => match(r, o.where)).length;
+    else if (o.op === 'delete_column') { bahaya = true; out.push('kolom ' + o.name); }
+    else if (o.op === 'create_table' && state.rows.length) { bahaya = true; out.push('tabel saat ini diganti'); }
+  });
+  return { n, bahaya, out };
+}
+
+// ---------- penyamaran nama siswa (hanya mode Penilaian) ----------
+const deep = (v, f) => typeof v === 'string' ? f(v) : Array.isArray(v) ? v.map(x => deep(x, f))
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x, f)])) : v;
+function maskers() {
+  const names = new Map();
+  if (mode === 'penilaian') state.rows.forEach(r => nameCols.forEach(c => {
+    const v = String(r[c] ?? '').trim(); if (v && !names.has(v.toLowerCase())) names.set(v.toLowerCase(), v);
+  }));
+  const code = new Map(), real = new Map(); let i = 0;
+  names.forEach((v, k) => { const c = 'Siswa-' + String(++i).padStart(3, '0'); code.set(k, c); real.set(c.toLowerCase(), v); });
+  const list = [...names.values()].sort((a, b) => b.length - a.length);
+  const re = list.length ? new RegExp(list.map(n => (/^\w/.test(n) ? '\\b' : '') + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (/\w$/.test(n) ? '\\b' : '')).join('|'), 'gi') : null;
+  return {
+    mask: s => re ? String(s).replace(re, m => code.get(m.toLowerCase())) : String(s),
+    unmask: s => String(s).replace(/Siswa-\d{3}/gi, m => real.get(m.toLowerCase()) ?? m),
+  };
+}
+function konteks(M) {
+  let n = state.rows.length, s;
+  do {
+    s = M.mask(JSON.stringify({ kolom: state.columns, jumlah_baris_total: state.rows.length, baris: state.rows.slice(0, n), RINGKASAN_HITUNG: ringkasan() }));
+    n = Math.floor(n * .8);
+  } while (s.length > 18000 && n > 5);
+  return s;
+}
+
+// ---------- chat ----------
+function say(t, c) {
+  const d = document.createElement('div'); d.className = 'm ' + c; d.textContent = t;
+  $('log').append(d); $('log').scrollTop = $('log').scrollHeight;
+}
+$('kode').value = sessionStorage.getItem('kode') || '';
+$('kode').oninput = e => sessionStorage.setItem('kode', e.target.value);
+
+$('cf').onsubmit = async e => {
+  e.preventDefault();
+  const text = $('msg').value.trim(); if (!text || !mode) return;
+  if (mode === 'penilaian' && state.columns.length && !nameCols.size && !confirm('Belum ada kolom nama siswa yang ditandai. Kirim tabel ke AI apa adanya?')) return;
+  $('msg').value = ''; say(text, 'u'); chat.push({ role: 'user', content: text });
+  try {
+    const M = maskers();
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-code': sessionStorage.getItem('kode') || '' },
+      body: JSON.stringify({ mode, context: konteks(M), messages: chat.slice(-4).map(m => ({ role: m.role, content: M.mask(m.content) })) }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Server tidak merespons (' + r.status + '). Jalankan lewat "vercel dev", bukan Live Server.');
+    const cmd = parse(d.reply);
+    if (!cmd) { const t = M.unmask(d.reply); chat.push({ role: 'assistant', content: t }); return say(t, 'b'); }
+    cmd.ops = deep(cmd.ops.slice(0, 50), M.unmask);
+    const msg = M.unmask(cmd.message || 'Selesai.');
+    chat.push({ role: 'assistant', content: msg });
+    const { n, bahaya, out } = dampak(cmd.ops);
+    if ((bahaya || n > 5) && !confirm('AI akan mengubah/menghapus data' + (n ? ' (' + n + ' baris terdampak)' : '')
+      + (out.length ? ':\n- ' + out.slice(0, 12).join('\n- ') + (out.length > 12 ? '\n…' : '') : '') + '\nLanjutkan? (masih bisa di-Undo)')) return say('Dibatalkan.', 'b');
+    commit(() => { apply(cmd.ops); if (mode === 'penilaian' && cmd.ops.some(o => o.op === 'create_table')) guess(); });
+    say(msg, 'b');
+  } catch (err) {
+    if (chat.at(-1)?.role === 'user') chat.pop();
+    say('Gagal: ' + err.message, 'b');
+  }
+};
+render();
+</script>
+</body>
+</html>
